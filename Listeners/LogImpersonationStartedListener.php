@@ -12,20 +12,24 @@ declare(strict_types=1);
 
 namespace Ghost\Listeners;
 
-use App\Models\Activity;
+use Activity\Activity;
 use Ghost\Events\ImpersonationStartedEvent;
 
 class LogImpersonationStartedListener
 {
     public function handle(ImpersonationStartedEvent $event): void
     {
-        Activity::log(
-            $event->impersonator,
-            sprintf(
+        if (!class_exists(Activity::class)) {
+            return;
+        }
+
+        Activity::user((int) $event->impersonator->id)
+            ->subject($event->impersonated)
+            ->description(sprintf(
                 'Started impersonating user #%d (%s)',
                 $event->impersonated->id,
                 $event->impersonated->email ?? $event->impersonated->name ?? 'unknown'
-            )
-        );
+            ))
+            ->log();
     }
 }

@@ -34,6 +34,15 @@ Ghost can be installed as a framework package:
 php dock package:install Ghost --packages
 ```
 
+### What happens during installation?
+
+The `dock` CLI automates several steps to ensure the package is ready for use:
+
+- **Configuration Publishing**: Copies the package configuration to `App/Config/ghost.php`.
+- **Provider Registration**: Registers `Ghost\Providers\GhostServiceProvider` in the application kernel.
+- **Middleware Setup**: Automatically injects `Ghost\Middleware\ImpersonateMiddleware` into the `web` middleware stack.
+- **Event Discovery**: Enables the framework to discover ghost-related events and listeners.
+
 ## Basic Usage
 
 ### Starting Impersonation
@@ -127,14 +136,16 @@ Ghost uses a signed session payload with HMAC-SHA256 to prevent tampering:
 | `expires_at`      | Unix timestamp when session expires     |
 | `signature`       | HMAC-SHA256 hash using `encryption_key` |
 
-The `ImpersonateMiddleware` automatically terminates impersonation if the signature is invalid or TTL has expired.
+The default `Ghost\Middleware\ImpersonateMiddleware` is provided to automatically maintain and validate the impersonation state across requests. It terminates sessions if the signature is invalid or the TTL has expired.
+
+For custom application logic (like blocking specific actions), you can implement your own middleware as shown in the [Implementation](#api-protection-middleware) section.
 
 ## Activity Logging
 
-Ghost automatically logs all impersonation events to the activity table via built-in listeners:
+Ghost automatically logs all impersonation events to the activity table via built-in listeners, provided the `Activity` package is installed:
 
-- `LogImpersonationStarted`: Records when admin starts impersonating
-- `LogImpersonationStopped`: Records when impersonation ends
+- `LogImpersonationStartedListener`: Records when admin starts impersonating
+- `LogImpersonationStoppedListener`: Records when impersonation ends
 
 Example activity log entry:
 
@@ -148,8 +159,8 @@ Description: Started impersonating user #123 (john@example.com)
 Ghost dispatches events for custom integrations:
 
 ```php
-use Ghost\Events\ImpersonationStarted;
-use Ghost\Events\ImpersonationStopped;
+use Ghost\Events\ImpersonationStartedEvent;
+use Ghost\Events\ImpersonationStoppedEvent;
 
 // Both events contain:
 $event->impersonator; // User who initiated impersonation
@@ -158,21 +169,19 @@ $event->impersonated; // User being impersonated
 
 ## Implementation
 
-#### Admin Panel Controller
+### Admin Panel Controller
 
 ```php
-namespace App\Admin\Controllers;
-
+use App\Models\User;
 use App\Core\BaseController;
-use App\Services\UserService;
 use Ghost\Ghost;
 use Helpers\Http\Response;
 
 class ImpersonateController extends BaseController
 {
-    public function impersonate(UserService $userService, ?string $refid = null): Response
+    public function impersonate(?string $refid = null): Response
     {
-        $user = $userService->getUser($refid);
+        $user = User::findByRefid($refid);
 
         if (!$user) {
             $this->flash->error('User not found.');
@@ -202,7 +211,7 @@ class ImpersonateController extends BaseController
 }
 ```
 
-#### Protecting Sensitive Actions
+### Protecting Sensitive Actions
 
 Prevent impersonators from performing destructive actions:
 
@@ -220,7 +229,7 @@ public function destroy(): Response
 }
 ```
 
-#### API Protection Middleware
+### API Protection Middleware
 
 ```php
 namespace App\Middleware;
@@ -250,3 +259,21 @@ class PreventGhostActionsMiddleware implements MiddlewareInterface
     }
 }
 ```
+
+## Package Design & Structure
+
+The Ghost package follows the Anchor Framework's **Internal Package Architecture**. Unlike standalone libraries, it is designed for deep integration with the core:
+
+### Directory Layout
+
+- `Config/`: Default settings (published during installation).
+- `Events/ & Listeners/`: Built-in lifecycle hooks and activity logging.
+- `Middleware/`: Core security and TTL validation.
+- `Providers/`: Automated registration with the IoC container.
+- `setup.php`: The "installation manifest" that tells the CLI how to configure the package.
+
+### Why this structure?
+
+1. **Zero-Configuration Experience**: Standard standalone packages often require manual provider and middleware registration. Anchor's `setup.php` allows the `dock` CLI to perform these actions automatically.
+2. **Architectural Consistency**: By mirroring the application's structure within the package, developers can seamlessly transition between building application features and framework extensions.
+3. **Efficiency**: Centralized testing and discovery make the package faster to load and easier to maintain within a monorepo-style environment.

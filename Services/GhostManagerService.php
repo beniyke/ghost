@@ -15,7 +15,6 @@ namespace Ghost\Services;
 use App\Models\User;
 use App\Services\Auth\Interfaces\AuthServiceInterface;
 use App\Services\SessionService;
-use App\Services\UserService;
 use Core\Event;
 use Core\Services\ConfigServiceInterface;
 use Ghost\Events\ImpersonationStartedEvent;
@@ -29,8 +28,7 @@ class GhostManagerService
         private readonly AuthServiceInterface $auth,
         private readonly SessionService $session_service,
         private readonly ConfigServiceInterface $config,
-        private readonly Session $session,
-        private readonly UserService $userService
+        private readonly Session $session
     ) {
     }
 
@@ -46,7 +44,7 @@ class GhostManagerService
             return false;
         }
 
-        if ($impersonator->id === $user->id) {
+        if ($impersonator->isSelf($user)) {
             return false;
         }
 
@@ -54,10 +52,11 @@ class GhostManagerService
             return false;
         }
 
-        $originalToken = $this->session->get($this->config->get('session.name'));
-        $targetSession = $this->session_service->createNewSession($user, (int) $this->config->get('ghost.ttl'));
+        $authKey = $this->auth->getSessionKey();
+        $originalToken = $this->session->get($authKey);
+        $token = $this->session_service->create($user);
 
-        if (!$targetSession) {
+        if (!$token) {
             throw new RuntimeException("Failed to create session for impersonated user.");
         }
 
@@ -72,26 +71,37 @@ class GhostManagerService
         $ghostData['signature'] = $this->generateSignature($ghostData);
 
         $this->session->set($this->config->get('ghost.session_key'), $ghostData);
-        $this->session->set($this->config->get('session.name'), $targetSession->token);
+        $this->session->set($authKey, $token);
 
         Event::dispatch(new ImpersonationStartedEvent($impersonator, $user));
 
         return true;
     }
 
+    /**
+     * Stop the current impersonation and restore the original user session.
+     */
     public function stop(): bool
     {
-        if (!$this->isGhosting()) {
+        $ghostKey = $this->config->get('ghost.session_key');
+        $ghostData = $this->session->get($ghostKey);
+
+        if (!$ghostData) {
             return false;
         }
 
-        $ghostData = $this->session->get($this->config->get('ghost.session_key'));
+        if (!$this->verifySignature($ghostData)) {
+            $this->session->delete($ghostKey);
 
-        $impersonator = $this->userService->findById($ghostData['impersonator_id']);
-        $impersonated = $this->userService->findById($ghostData['impersonated_id']);
+            return false;
+        }
 
-        $this->session->set($this->config->get('session.name'), $ghostData['original_token']);
-        $this->session->delete($this->config->get('ghost.session_key'));
+        $impersonator = User::find($ghostData['impersonator_id']);
+        $impersonated = User::find($ghostData['impersonated_id']);
+
+        $authKey = $this->auth->getSessionKey();
+        $this->session->set($authKey, $ghostData['original_token']);
+        $this->session->delete($ghostKey);
 
         if ($impersonator && $impersonated) {
             Event::dispatch(new ImpersonationStoppedEvent($impersonator, $impersonated));
@@ -119,7 +129,7 @@ class GhostManagerService
 
         $ghostData = $this->session->get($this->config->get('ghost.session_key'));
 
-        return $this->userService->findById($ghostData['impersonator_id']);
+        return User::find($ghostData['impersonator_id']);
     }
 
     public function getImpersonated(): ?User
@@ -130,7 +140,7 @@ class GhostManagerService
 
         $ghostData = $this->session->get($this->config->get('ghost.session_key'));
 
-        return $this->userService->findById($ghostData['impersonated_id']);
+        return User::find($ghostData['impersonated_id']);
     }
 
     public function isExpired(): bool
@@ -167,7 +177,6 @@ class GhostManagerService
 
     private function canImpersonate(User $impersonator, User $target): bool
     {
-
         $protectedRoles = $this->config->get('ghost.protected_roles', ['super-admin']);
         foreach ($protectedRoles as $role) {
             if ($target->hasRole($role)) {
