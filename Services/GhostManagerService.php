@@ -13,8 +13,8 @@ declare(strict_types=1);
 namespace Ghost\Services;
 
 use App\Models\User;
-use App\Services\Auth\Interfaces\AuthServiceInterface;
 use App\Services\SessionService;
+use Core\Contracts\AuthServiceInterface;
 use Core\Event;
 use Core\Services\ConfigServiceInterface;
 use Ghost\Events\ImpersonationStartedEvent;
